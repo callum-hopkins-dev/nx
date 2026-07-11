@@ -21,6 +21,7 @@
           runtimeInputs = [
             final.git
             final.nix
+            final.nixos-rebuild-ng
             final.hostname
             final.delta
           ];
