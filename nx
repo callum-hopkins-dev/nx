@@ -1,0 +1,300 @@
+#!/bin/sh
+
+set -euo pipefail
+
+error() {
+  if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
+    ERROR=$(printf '\033[1;31m')
+    RESET=$(printf '\033[0m')
+  else
+    unset ERROR RESET
+  fi
+
+  printf '%s%s%s\n' "$ERROR" "$*" "$RESET" >&2
+  exit 1
+}
+
+export NIX_CONFIG="experimental-features = nix-command flakes" 
+export NIXPKGS_ALLOW_UNFREE=1
+
+flake="/etc/nixos"
+host="$(hostname)"
+
+cmd="${1:---help}"
+shift 2> /dev/null || true
+
+case "$cmd" in
+  setup)
+    repo=""
+    host=""
+    commit=""
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --repo)
+          [ "$#" -ge 2 ] || {
+            error "nx setup: --repo requires a value"
+          }
+          repo="$2"
+          shift 2
+          ;;
+
+        --host)
+          [ "$#" -ge 2 ] || {
+            error "nx setup: --host requires a value"
+          }
+          host="$2"
+          shift 2
+          ;;
+
+        --commit)
+          [ "$#" -ge 2 ] || {
+            error "nx setup: --commit requires a value"
+          }
+          commit="$2"
+          shift 2
+          ;;
+
+
+        *)
+          error "nx setup: unknown argument: $1"
+          ;;
+      esac
+    done
+
+    [ -n "$repo" ] || {
+      error "nx setup: missing required --repo"
+    }
+
+    [ -n "$host" ] || {
+      error "nx setup: missing required --host"
+    }
+
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+
+    git clone "$repo" "$tmp"
+
+    if [ -n "$commit" ]; then
+      git -C "$tmp" checkout "$commit"
+    fi
+
+    [ ! -d "$flake" ] || sudo rmdir "$flake" 2>/dev/null || {
+      error "nx setup: $flake already exists and is not empty"
+    }
+    
+    sudo mkdir -p "$flake"
+    sudo rmdir "$flake"
+
+    sudo cp -a "$tmp" "$flake"
+
+    sudo chown -R "root:root" "$flake"
+    sudo chmod -R a+rwX "$flake"
+
+    sudo nixos-rebuild switch --flake "$flake#$host"
+    ;;
+
+  build)
+    nix build "$flake#nixosConfigurations.$host.config.system.build.toplevel"
+    ;;
+
+  switch)
+    no_push=0
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --no-push)
+          no_push=1
+          shift
+          ;;
+
+        *)
+          error "nx switch: unknown argument: $1"
+          ;;
+      esac
+    done
+
+    git -C "$flake" diff -- '*.nix' | delta
+    git -C "$flake" add -A
+
+    sudo nixos-rebuild switch --flake "$flake#$host"
+
+    git -C "$flake" diff --cached --quiet || {
+      git -C "$flake" commit -m "nixos: switch"
+
+      if [ "$no_push" -eq 0 ]; then
+        git -C "$flake" push
+      fi
+    }
+    ;;
+
+  update)
+    no_pull=0
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --no-pull)
+          no_pull=1
+          shift
+          ;;
+
+        *)
+          error "nx update: unknown argument: $1"
+          ;;
+      esac
+    done
+
+    if [ "$no_pull" -eq 0 ]; then
+      git -C "$flake" stash push
+      git -C "$flake" pull --ff-only
+      git -C "$flake" stash pop
+    fi
+
+    git -C "$flake" add flake.nix
+    nix flake update --flake "$flake"
+
+    git -C "$flake" diff --quiet HEAD -- flake.lock || {
+      git -C "$flake" add flake.lock
+      git -C "$flake" commit -m "nixos: update"
+    }
+    ;;
+
+  run)
+    nix run "$@"
+    ;;
+
+  shell)
+    nix-shell -p "$@" --command "$SHELL"
+    ;;
+
+  dev)
+    nix develop "$@" --command "$SHELL"
+    ;;
+
+  check)
+    nix flake check "$flake"
+    ;;
+
+  -h|--help)
+    if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+      RESET=$(printf '\033[0m')
+      BOLD=$(printf '\033[1m')
+      DIM=$(printf '\033[2m')
+
+      HEADING=$(printf '\033[1;34m')  # Bold blue
+      COMMAND=$(printf '\033[1;32m')  # Bold green
+      OPTION=$(printf '\033[33m')     # Yellow
+      VALUE=$(printf '\033[36m')      # Cyan
+      ERROR=$(printf '\033[1;31m')    # Bold red
+    else
+      unset RESET BOLD DIM HEADING COMMAND OPTION VALUE ERROR
+    fi
+
+    cat <<EOF
+${BOLD}${VALUE}nx${RESET} — manage a flake-based NixOS configuration
+
+${HEADING}Usage${RESET}
+  ${COMMAND}nx${RESET} ${VALUE}<command>${RESET} [options]
+
+${HEADING}About${RESET}
+  nx is a small wrapper around common NixOS flake workflows.
+
+  Configuration directory:
+    ${VALUE}/etc/nixos${RESET}
+
+${HEADING}Commands${RESET}
+  ${COMMAND}setup${RESET} ${OPTION}--repo${RESET} ${VALUE}URL${RESET} ${OPTION}--host${RESET} ${VALUE}HOST${RESET} [${OPTION}--commit${RESET} ${VALUE}REF${RESET}]
+      Clone a configuration repository into ${VALUE}/etc/nixos${RESET} and
+      switch to the selected host configuration.
+
+      ${ERROR}Required${RESET}
+        ${OPTION}--repo${RESET} ${VALUE}URL${RESET}       Repository to clone
+        ${OPTION}--host${RESET} ${VALUE}HOST${RESET}      NixOS host configuration
+
+      ${BOLD}Optional${RESET}
+        ${OPTION}--commit${RESET} ${VALUE}REF${RESET}     Commit, branch, or tag to check out
+
+      ${DIM}Examples:${RESET}
+        nx setup --repo https://github.com/me/nixos.git --host laptop
+        nx setup --repo https://github.com/me/nixos.git \\
+          --host laptop --commit main
+
+  ${COMMAND}build${RESET}
+      Build the current host configuration without activating it.
+
+      ${DIM}Equivalent command:${RESET}
+        nix build \\
+          "/etc/nixos#nixosConfigurations.desktop.config.system.build.toplevel"
+
+  ${COMMAND}switch${RESET} [${OPTION}--no-push${RESET}]
+      Show changed .nix files, activate the current host configuration,
+      and commit any resulting repository changes. A newly created commit
+      is pushed unless ${OPTION}--no-push${RESET} is provided.
+
+      ${BOLD}Optional${RESET}
+        ${OPTION}--no-push${RESET}        Do not push a newly created commit
+ 
+      ${DIM}Examples:${RESET}
+        nx switch
+        nx switch --no-push
+
+  ${COMMAND}update${RESET} [${OPTION}--no-pull${RESET}]
+      Fast-forward the Git repository, update flake.lock, and commit the
+      lock file if it changed. The Git pull is skipped when ${OPTION}--no-pull${RESET} is
+      provided.
+
+      ${BOLD}Optional${RESET}
+        ${OPTION}--no-pull${RESET}        Do not pull from the remote repository
+ 
+      ${DIM}Examples:${RESET}
+        nx update
+        nx update --no-pull  
+
+  ${COMMAND}run${RESET} ${VALUE}FLAKE${RESET} [${VALUE}ARGS...${RESET}]
+      Run a flake application. Additional arguments are passed directly
+      to nix run.
+
+      ${DIM}Examples:${RESET}
+        nx run nixpkgs#hello
+        nx run .#my-app
+        nx run github:NixOS/nixpkgs#hello
+
+  ${COMMAND}shell${RESET} ${VALUE}PACKAGE...${RESET}
+      Open a temporary nix-shell containing the selected packages.
+
+      ${DIM}Example:${RESET}
+        nx shell git jq ripgrep
+
+  ${COMMAND}dev${RESET} [${VALUE}FLAKE${RESET}]
+      Enter a Nix development shell.
+
+      ${DIM}Examples:${RESET}
+        nx dev
+        nx dev .#myShell
+
+  ${COMMAND}check${RESET}
+      Run nix flake check for the system configuration.
+
+      ${DIM}Example:${RESET}
+        nx check
+
+${HEADING}Options${RESET}
+  ${OPTION}-h, --help${RESET}             Show this help message
+
+${HEADING}Environment${RESET}
+  ${BOLD}NIX_CONFIG${RESET}
+      Enables the nix-command and flakes experimental features.
+
+  ${BOLD}NIXPKGS_ALLOW_UNFREE${RESET}
+      Allows unfree packages during impure nixpkgs evaluation.
+
+${HEADING}Defaults${RESET}
+  Flake directory:          ${VALUE}/etc/nixos${RESET}
+  Host name:                detected using ${VALUE}hostname${RESET}
+EOF
+    ;;
+
+  *)
+    error "nx: unknown command: $cmd"
+    ;;
+esac
