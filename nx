@@ -116,7 +116,7 @@ case "$cmd" in
 
     (
       for next in $(git -C "$flake" ls-files --others --exclude-standard); do
-        git -C "$flake" --no-pager diff --no-index /dev/null $next;
+        git -C "$flake" --no-pager diff --no-index /dev/null "$next";
       done;
 
       git -C "$flake" diff -- '*.nix'
