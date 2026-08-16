@@ -162,11 +162,11 @@ case "$cmd" in
     ;;
 
   shell)
-    NIXPKGS_ALLOW_UNFREE=1 nix env shell --impure "$@" --command env SHELL=$SHELL $SHELL
+    NIXPKGS_ALLOW_UNFREE=1 nix env shell --impure "$@" --command env SHELL="$SHELL" "$SHELL"
     ;;
 
   dev)
-    NIXPKGS_ALLOW_UNFREE=1 nix develop --impure "$@" --command env SHELL=$SHELL $SHELL
+    NIXPKGS_ALLOW_UNFREE=1 nix develop --impure "$@" --command env SHELL="$SHELL" "$SHELL"
     ;;
 
   -h|--help)
