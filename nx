@@ -145,7 +145,7 @@ case "$cmd" in
     if [ "$no_pull" -eq 0 ]; then
       git -C "$flake" stash push
       git -C "$flake" pull --ff-only
-      git -C "$flake" stash pop
+      git -C "$flake" stash pop || true
     fi
 
     git -C "$flake" add flake.nix
