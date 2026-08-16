@@ -15,7 +15,6 @@ error() {
 }
 
 export NIX_CONFIG="experimental-features = nix-command flakes" 
-export NIXPKGS_ALLOW_UNFREE=1
 
 flake="/etc/nixos"
 host="$(hostname)"
@@ -83,13 +82,13 @@ case "$cmd" in
       error "nx setup: $flake already exists and is not empty"
     }
     
-    sudo mkdir -p "$flake"
-    sudo rmdir "$flake"
+    sudo install -d -o root -g users -m 2775 /etc/nixos
 
-    sudo cp -a "$tmp" "$flake"
-
-    sudo chown -R "root:root" "$flake"
-    sudo chmod -R a+rwX "$flake"
+    sudo cp -aT --no-preserve=ownership "$tmp" "$flake"
+    
+    sudo chown -R root:users "$flake"
+    sudo chmod -R g+rwX "$flake"
+    sudo chmod g+s "$flake"
 
     sudo nixos-rebuild switch --flake "$flake#$host"
     ;;
@@ -113,14 +112,6 @@ case "$cmd" in
           ;;
       esac
     done
-
-    (
-      for next in $(git -C "$flake" ls-files --others --exclude-standard); do
-        git -C "$flake" --no-pager diff --no-index /dev/null "$next";
-      done;
-
-      git -C "$flake" diff -- '*.nix'
-    ) | delta
 
     git -C "$flake" add -A
 
@@ -167,19 +158,15 @@ case "$cmd" in
     ;;
 
   run)
-    nix run "$@"
+    NIXPKGS_ALLOW_UNFREE=1 nix run --impure "$@"
     ;;
 
   shell)
-    nix-shell -p "$@" --command "$SHELL"
+    NIXPKGS_ALLOW_UNFREE=1 nix env shell --impure "$@" --command env SHELL=$SHELL $SHELL
     ;;
 
   dev)
-    nix develop "$@" --command "$SHELL"
-    ;;
-
-  check)
-    nix flake check "$flake"
+    NIXPKGS_ALLOW_UNFREE=1 nix develop --impure "$@" --command env SHELL=$SHELL $SHELL
     ;;
 
   -h|--help)
@@ -278,12 +265,6 @@ ${HEADING}Commands${RESET}
       ${DIM}Examples:${RESET}
         nx dev
         nx dev .#myShell
-
-  ${COMMAND}check${RESET}
-      Run nix flake check for the system configuration.
-
-      ${DIM}Example:${RESET}
-        nx check
 
 ${HEADING}Options${RESET}
   ${OPTION}-h, --help${RESET}             Show this help message
